@@ -1,98 +1,130 @@
-import os
-import shutil
-import tempfile
-import torch
-import numpy as np
-import soundfile as sf
-import scipy.signal
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from typing import Optional
+from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
+import soundfile as sf
+import io
 
-app = FastAPI(title="Audio Call Analyzer API", version="1.0.0")
+from audio_pipeline import create_windows, resample_audio
+from aasist_detector import AASISTDetector
+from transcription import transcription_provider
+from risk_engine import (
+    detect_indicators,
+    calculate_context_risk,
+    calculate_action_risk,
+    calculate_final_risk,
+)
 
-# 1. CORS Setup (Taaki Vercel/Netlify/Localhar jagah se frontend connect ho sake)
+app = FastAPI(title="VoiceShield Backend")
+
+# CORS middleware for frontend integration (Vite / React)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-ALLOWED_EXTENSIONS = {".mp3", ".wav", ".m4a", ".flac", ".ogg"}
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+# Load AASIST-L detector once at startup
+detector = AASISTDetector()
 
 
 @app.get("/")
-def read_root():
+def home():
     return {
-        "status": "online",
-        "service": "Call Analyzer API",
-        "device": DEVICE,
-        "torch_version": torch.__version__
+        "project": "VoiceShield Backend",
+        "status": "Backend is running",
+        "detector": "AASIST-L",
+        "risk_engine": "connected",
+        "transcription": type(transcription_provider).__name__,
     }
 
 
-@app.post("/analyze")
-async def analyze_call(file: UploadFile = File(...)):
-    # 2. File Format Check
-    file_ext = os.path.splitext(file.filename)[1].lower()
-    if file_ext not in ALLOWED_EXTENSIONS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid file format '{file_ext}'. Allowed formats: {', '.join(ALLOWED_EXTENSIONS)}"
-        )
+@app.post("/upload-audio")
+async def upload_audio(file: UploadFile = File(...)):
+    """
+    Voice-spoof detection only endpoint.
+    """
+    audio_data = await file.read()
+    audio, sample_rate = sf.read(io.BytesIO(audio_data))
 
-    temp_file_path = None
-    try:
-        # 3. Temporary Audio Storage
-        with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as temp_file:
-            shutil.copyfileobj(file.file, temp_file)
-            temp_file_path = temp_file.name
+    if len(audio.shape) > 1:
+        audio = audio.mean(axis=1)
 
-        # 4. Sound Processing via soundfile & numpy
-        data, sample_rate = sf.read(temp_file_path)
-        
-        # Mono channel conversion
-        if len(data.shape) > 1:
-            data = np.mean(data, axis=1)
+    duration = len(audio) / sample_rate
 
-        duration_seconds = float(len(data) / sample_rate)
-        rms_energy = float(np.sqrt(np.mean(data**2)))
+    original_sample_rate = sample_rate
+    audio = resample_audio(audio, sample_rate, AASISTDetector.SAMPLE_RATE)
+    sample_rate = AASISTDetector.SAMPLE_RATE
 
-        # PyTorch Tensor Processing
-        audio_tensor = torch.from_numpy(data).float().to(DEVICE)
-        peak_val = float(torch.max(torch.abs(audio_tensor)).cpu().item())
+    detection = detector.analyze(audio)
 
-        # Response Payload
-        analysis_result = {
-            "file_name": file.filename,
-            "sample_rate": sample_rate,
-            "duration": f"{duration_seconds:.2f} seconds",
-            "channels": 1,
-            "device_used": DEVICE,
-            "signal_metrics": {
-                "rms_energy": round(rms_energy, 4),
-                "peak_amplitude": round(peak_val, 4)
-            },
-            "sentiment": "Positive" if rms_energy > 0.01 else "Neutral",
-            "summary": f"Audio file successfully processed. Total length is {duration_seconds:.1f} seconds.",
-            "transcription": "Sample transcription generated from processed audio signal."
-        }
-
-        return analysis_result
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Audio processing error: {str(e)}")
-
-    finally:
-        # 5. Cleanup Temp File
-        if temp_file_path and os.path.exists(temp_file_path):
-            os.remove(temp_file_path)
+    return {
+        "filename": file.filename,
+        "content_type": file.content_type,
+        "size_bytes": len(audio_data),
+        "original_sample_rate": original_sample_rate,
+        "analyzed_sample_rate": sample_rate,
+        "duration_seconds": round(duration, 2),
+        "voice_detection": detection,
+        "status": "Audio analyzed successfully",
+    }
 
 
-if __name__ == "__main__":
-    import uvicorn
-    # Dynamic Render Port Binding
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port)
+@app.post("/analyze-call")
+async def analyze_call(
+    file: UploadFile = File(...),
+    transcript: Optional[str] = Form(None),
+):
+    """
+    Full enterprise pipeline: Voice Spoof Detection + Auto-Transcription (Whisper) 
+    + Context/Action Risk Fusion.
+    """
+    audio_data = await file.read()
+    audio, sample_rate = sf.read(io.BytesIO(audio_data))
+
+    if len(audio.shape) > 1:
+        audio = audio.mean(axis=1)
+
+    duration = len(audio) / sample_rate
+
+    original_sample_rate = sample_rate
+    audio = resample_audio(audio, sample_rate, AASISTDetector.SAMPLE_RATE)
+    sample_rate = AASISTDetector.SAMPLE_RATE
+
+    # --- 1. Voice Channel Analysis (AASIST-L) ---
+    detection = detector.analyze(audio)
+    voice_risk = detection["average_spoof_probability"]
+    reliability = detection["reliability"]
+
+    # --- 2. Context Channel (Automatic Speech-to-Text via Whisper) ---
+    if not transcript:
+        transcript = transcription_provider.transcribe(audio, sample_rate)
+
+    indicators = detect_indicators(transcript) if transcript else []
+    context_risk = calculate_context_risk(indicators) if transcript else 0.0
+    action_risk = calculate_action_risk(indicators)
+
+    # --- 3. Multi-Layer Risk Fusion ---
+    final_risk = calculate_final_risk(
+        voice_risk=voice_risk,
+        context_risk=context_risk,
+        action_risk=action_risk,
+        reliability=reliability,
+    )
+
+    return {
+        "filename": file.filename,
+        "original_sample_rate": original_sample_rate,
+        "analyzed_sample_rate": sample_rate,
+        "duration_seconds": round(duration, 2),
+        "voice_detection": detection,
+        "transcript_used": transcript,
+        "detected_indicators": indicators,
+        "context_risk": round(context_risk, 3),
+        "action_risk": round(action_risk, 3),
+        "final_risk_assessment": final_risk,
+    }
