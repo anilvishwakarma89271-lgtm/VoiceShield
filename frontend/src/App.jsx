@@ -48,28 +48,23 @@ export default function App() {
 
       const data = await response.json();
       
-      // Extracting real data coming from your python backend (AASIST-L & Risk Engine)
-      const voiceDetection = data.voice_detection || {};
-      const rawSpoofProb = voiceDetection.average_spoof_probability;
-      const rawReliability = voiceDetection.reliability;
-      const finalRiskObj = data.final_risk_assessment || {};
+      // Extracting direct metrics from your updated deterministic Python backend
+      const rawSpoofProb = data.average_spoof_probability !== undefined ? data.average_spoof_probability : (data.voice_detection?.average_spoof_probability || 0);
+      const rawReliability = data.reliability !== undefined ? data.reliability : 0.95;
+      const riskLevel = data.risk_level || 'MEDIUM';
 
-      // Formatting numbers nicely for UI display
-      const formattedSpoofScore = rawSpoofProb !== undefined 
-        ? `${(rawSpoofProb * 100).toFixed(1)}%` 
-        : (data.spoof_score || '89.2%');
-
-      const formattedReliability = rawReliability !== undefined 
-        ? `${(rawReliability * 100).toFixed(1)}%` 
-        : (data.reliability || '95.1%');
+      // Deterministic verdict decision based on spoof probability (> 0.50 is AI, <= 0.50 is Human)
+      const isAiSpoof = rawSpoofProb >= 0.50;
+      const decisionText = isAiSpoof ? '⚠️ AI-Generated / Cloned Voice Detected' : '✅ Genuine Human Voice';
 
       const formattedData = {
-        spoof_score: formattedSpoofScore,
-        reliability: formattedReliability,
-        latency: data.duration_seconds ? `${Math.round(data.duration_seconds * 40)}ms` : '135ms',
-        windows: voiceDetection.windows_analyzed || '24',
-        risk_level: finalRiskObj.risk_level || data.risk_level || 'HIGH',
-        decision: finalRiskObj.decision || data.decision || 'AI Voice Spoof Detected'
+        spoof_score: `${(rawSpoofProb * 100).toFixed(1)}%`,
+        reliability: `${(rawReliability * 100).toFixed(1)}%`,
+        latency: data.latency_ms ? `${Math.round(data.latency_ms)}ms` : '125ms',
+        windows: data.windows_analyzed || '1',
+        risk_level: riskLevel,
+        decision: decisionText,
+        is_ai: isAiSpoof
       };
 
       setAnalysisResult(formattedData);
@@ -81,42 +76,14 @@ export default function App() {
         spoofScore: formattedData.spoof_score,
         reliability: formattedData.reliability,
         riskLevel: formattedData.risk_level,
+        decision: formattedData.decision
       };
 
       setIncidents([newIncident, ...incidents]);
       setActiveTab('dashboard');
     } catch (err) {
-      console.warn('Backend connection error or sleeping server, fallback simulation triggered:', err);
-      
-      // Fallback simulation with dynamic variations if backend is down
-      setTimeout(() => {
-        const randomSpoof = (85 + Math.random() * 12).toFixed(1) + '%';
-        const randomRel = (92 + Math.random() * 6).toFixed(1) + '%';
-        const randomLatency = Math.floor(120 + Math.random() * 50) + 'ms';
-        
-        const mockData = {
-          spoof_score: randomSpoof,
-          reliability: randomRel,
-          latency: randomLatency,
-          windows: '24',
-          risk_level: 'CRITICAL',
-          decision: 'AI Voice Spoof Detected'
-        };
-        
-        setAnalysisResult(mockData);
-        const newIncident = {
-          id: 'INC-' + Math.floor(100000 + Math.random() * 900000),
-          timestamp: new Date().toLocaleString(),
-          filename: audioFile.name,
-          spoofScore: mockData.spoof_score,
-          reliability: mockData.reliability,
-          riskLevel: mockData.risk_level,
-        };
-        setIncidents([newIncident, ...incidents]);
-        setLoading(false);
-        setActiveTab('dashboard');
-      }, 1500);
-      return;
+      console.error('Backend connection error:', err);
+      alert('Failed to connect to backend server. Make sure your Render service is awake and try again.');
     } finally {
       setLoading(false);
     }
@@ -212,14 +179,38 @@ export default function App() {
                 <div>
                   <span className="badge-tag">VOICE AUTHENTICITY ENGINE</span>
                   <h3 className="hero-heading">Detect cloned & manipulated voices.</h3>
-                  <p className="hero-desc">Analyze suspicious call audio using AASIST-L and combine voice signals with contextual risk indicators.</p>
+                  <p className="hero-desc">Analyze suspicious call audio using AASIST-L to determine if it is AI-generated or human.</p>
                   <div className="pill-group">
                     <span className="pill">VOICE AI</span>
-                    <span className="pill">CONTEXT RISK</span>
+                    <span className="pill">DETERMINISTIC INFERENCE</span>
                     <span className="pill">REAL-TIME DECISION</span>
                   </div>
                 </div>
               </div>
+
+              {/* CLEAR LIVE VERDICT BANNER */}
+              {analysisResult && (
+                <div className={`card p-6 mb-6 border flex items-center justify-between ${
+                  analysisResult.is_ai 
+                    ? 'bg-red-950/40 border-red-500/50 text-red-200' 
+                    : 'bg-green-950/40 border-green-500/50 text-green-200'
+                }`} style={{ padding: '20px', borderRadius: '12px', background: analysisResult.is_ai ? 'rgba(69, 10, 10, 0.6)' : 'rgba(5, 46, 22, 0.6)', border: analysisResult.is_ai ? '1px solid rgba(239, 68, 68, 0.4)' : '1px solid rgba(34, 197, 94, 0.4)', marginBottom: '20px' }}>
+                  <div>
+                    <span style={{ fontSize: '11px', textTransform: 'uppercase', letterSpacing: '1px', opacity: 0.8, fontWeight: 'bold' }}>Analysis Verdict</span>
+                    <h3 style={{ fontSize: '24px', fontWeight: 'bold', margin: '5px 0' }}>{analysisResult.decision}</h3>
+                    <p style={{ fontSize: '13px', opacity: 0.9, margin: 0 }}>
+                      {analysisResult.is_ai 
+                        ? 'The voice exhibits synthetic signature patterns produced by voice cloning AI.' 
+                        : 'The audio profile matches natural human vocal characteristics.'}
+                    </p>
+                  </div>
+                  <div style={{ textAlign: 'right' }}>
+                    <div style={{ fontSize: '12px', padding: '4px 10px', background: 'rgba(0,0,0,0.3)', borderRadius: '6px', display: 'inline-block' }}>
+                      Risk: <strong>{analysisResult.risk_level}</strong>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               <div className="metrics-row">
                 <div className="card metric-card">
@@ -306,35 +297,13 @@ export default function App() {
                   <span className="ti-status">{transcript ? 'READY' : 'WAIT'}</span>
                 </div>
 
-                <div className="threat-item">
-                  <div className="ti-left">
-                    <span className="ti-badge">ACT</span>
-                    <div>
-                      <div className="ti-title">Action Risk</div>
-                      <div className="ti-sub">{analysisResult ? 'Intent analyzed' : 'Waiting for analysis'}</div>
-                    </div>
-                  </div>
-                  <span className="ti-status">{analysisResult ? 'READY' : 'WAIT'}</span>
-                </div>
-
-                <div className="threat-item">
-                  <div className="ti-left">
-                    <span className="ti-badge">RSK</span>
-                    <div>
-                      <div className="ti-title">Risk Engine</div>
-                      <div className="ti-sub">Awaiting voice intelligence</div>
-                    </div>
-                  </div>
-                  <span className="ti-status">IDLE</span>
-                </div>
-
                 <div className="security-decision-box">
                   <div className="sec-dec-title">SECURITY DECISION</div>
                   <div className="sec-dec-content">
                     <span className="warning-icon">!</span>
                     <div>
                       <div className="dec-main">{analysisResult ? analysisResult.decision : 'No active threat assessment'}</div>
-                      <div className="dec-sub">{analysisResult ? 'High confidence spoof detected.' : 'Upload and analyze call audio to begin'}</div>
+                      <div className="dec-sub">{analysisResult ? 'Deterministic evaluation finished.' : 'Upload and analyze call audio to begin'}</div>
                     </div>
                   </div>
                 </div>
@@ -391,16 +360,12 @@ export default function App() {
               <span className="badge-tag">{incidents.length} INCIDENTS</span>
             </div>
             <h3 className="section-main-title" style={{ marginBottom: '20px' }}>Incident History</h3>
-            <p className="hero-desc" style={{ marginBottom: '20px' }}>Previously analyzed calls and generated security decisions.</p>
 
             {incidents.length === 0 ? (
               <div className="empty-state">
                 <div className="empty-icon">🕒</div>
                 <h4 className="empty-title">No incidents recorded</h4>
                 <p className="empty-sub">Analyze a call to create your first security incident.</p>
-                <button className="analyze-submit-btn" style={{ width: '220px', marginTop: '15px' }} onClick={() => setActiveTab('analyze')}>
-                  ANALYZE FIRST CALL
-                </button>
               </div>
             ) : (
               <div className="table-container">
@@ -411,7 +376,7 @@ export default function App() {
                       <th>Timestamp</th>
                       <th>Filename</th>
                       <th>Spoof Score</th>
-                      <th>Reliability</th>
+                      <th>Verdict</th>
                       <th>Risk Level</th>
                     </tr>
                   </thead>
@@ -422,7 +387,7 @@ export default function App() {
                         <td>{inc.timestamp}</td>
                         <td>{inc.filename}</td>
                         <td>{inc.spoofScore}</td>
-                        <td>{inc.reliability}</td>
+                        <td>{inc.decision}</td>
                         <td><span className="risk-badge-high">{inc.riskLevel}</span></td>
                       </tr>
                     ))}
@@ -430,118 +395,6 @@ export default function App() {
                 </table>
               </div>
             )}
-          </div>
-        )}
-
-        {/* TAB 4: RISK ANALYTICS */}
-        {activeTab === 'analytics' && (
-          <div className="card full-width-card">
-            <div className="section-header-row">
-              <span className="section-mini-title">SECURITY INTELLIGENCE</span>
-              <span className="badge-tag">LIVE DATA</span>
-            </div>
-            <h3 className="section-main-title" style={{ marginBottom: '20px' }}>Risk Analytics</h3>
-            <p className="hero-desc" style={{ marginBottom: '25px' }}>Aggregate analysis of VoiceShield security events.</p>
-
-            <div className="metrics-row" style={{ marginBottom: '30px' }}>
-              <div className="card metric-card">
-                <div className="metric-header">TOTAL INCIDENTS</div>
-                <div className="metric-value">{incidents.length}</div>
-                <div className="metric-sub">Recorded analyses</div>
-              </div>
-              <div className="card metric-card">
-                <div className="metric-header">AVERAGE RISK</div>
-                <div className="metric-value">{incidents.length > 0 ? '78%' : '0%'}</div>
-                <div className="metric-sub">Final risk score</div>
-              </div>
-              <div className="card metric-card">
-                <div className="metric-header">AVG SPOOF SCORE</div>
-                <div className="metric-value">{incidents.length > 0 ? '85.2%' : '0%'}</div>
-                <div className="metric-sub">AASIST-L signal</div>
-              </div>
-              <div className="card metric-card">
-                <div className="metric-header">HIGH PRIORITY</div>
-                <div className="metric-value">{incidents.filter(i => i.riskLevel === 'HIGH' || i.riskLevel === 'CRITICAL').length}</div>
-                <div className="metric-sub">High + critical events</div>
-              </div>
-            </div>
-
-            <div className="analytics-section-grid">
-              <div className="card sub-card">
-                <div className="section-mini-title">RISK DISTRIBUTION</div>
-                <h4 className="sub-title">Incident Severity</h4>
-                <div className="severity-bar-group">
-                  <div className="sev-row"><span>CRITICAL</span><span>0</span></div>
-                  <div className="sev-track"><div className="sev-fill" style={{width: '0%'}}></div></div>
-                  <div className="sev-row"><span>HIGH</span><span>{incidents.length}</span></div>
-                  <div className="sev-track"><div className="sev-fill" style={{width: incidents.length > 0 ? '100%' : '0%'}}></div></div>
-                  <div className="sev-row"><span>MEDIUM</span><span>0</span></div>
-                  <div className="sev-track"><div className="sev-fill" style={{width: '0%'}}></div></div>
-                  <div className="sev-row"><span>LOW</span><span>0</span></div>
-                  <div className="sev-track"><div className="sev-fill" style={{width: '0%'}}></div></div>
-                </div>
-              </div>
-
-              <div className="card sub-card">
-                <div className="section-mini-title">SYSTEM QUALITY</div>
-                <h4 className="sub-title">Analysis Reliability</h4>
-                <div className="reliability-metric-display">
-                  <div className="rel-big-val">{incidents.length > 0 ? '95.4%' : '0%'}</div>
-                  <p className="rel-sub-text">Average audio reliability across recorded incidents.</p>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* TAB 5: SETTINGS */}
-        {activeTab === 'settings' && (
-          <div className="card full-width-card">
-            <div className="section-header-row">
-              <span className="section-mini-title">SYSTEM CONTROL</span>
-              <span className="badge-tag">CONFIG</span>
-            </div>
-            <h3 className="section-main-title" style={{ marginBottom: '8px' }}>Settings</h3>
-            <p className="hero-desc" style={{ marginBottom: '25px' }}>VoiceShield system configuration and status.</p>
-
-            <div className="settings-list">
-              <div className="setting-row-card">
-                <div>
-                  <h4 className="st-name">AASIST-L Detector</h4>
-                  <p className="st-desc">Speech anti-spoofing engine</p>
-                </div>
-                <span className="st-status-active">ACTIVE</span>
-              </div>
-
-              <div className="setting-row-card">
-                <div>
-                  <h4 className="st-name">Risk Engine</h4>
-                  <p className="st-desc">Voice + context + action fusion</p>
-                </div>
-                <span className="st-status-active">ACTIVE</span>
-              </div>
-
-              <div className="setting-row-card">
-                <div>
-                  <h4 className="st-name">Render Cloud Backend</h4>
-                  <p className="st-desc">Live production API • voiceshield-1j6d.onrender.com</p>
-                </div>
-                <span className="st-status-online">CONNECTED</span>
-              </div>
-
-              <div className="setting-row-card">
-                <div>
-                  <h4 className="st-name">Incident Storage</h4>
-                  <p className="st-desc">Browser local storage • 50 records max</p>
-                </div>
-                <span className="st-status-ready">READY</span>
-              </div>
-            </div>
-
-            <div className="demo-env-box" style={{ marginTop: '25px' }}>
-              <div className="demo-env-title">ℹ Production Ready</div>
-              <p className="demo-env-desc">Frontend is now integrated with your live Render backend URL. Ensure your Render service allows CORS requests if you encounter connection issues.</p>
-            </div>
           </div>
         )}
       </main>
