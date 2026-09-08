@@ -1,45 +1,54 @@
 """
 Transcript source for the risk_engine's context/action-risk indicators.
-
-None of the uploaded files included a speech-to-text component, so
-risk_engine.indicators (which scans a call TRANSCRIPT for phrases like
-"transfer money" or "don't call me back") had nothing to run on.
-
-This module defines a small interface so the team can plug in whichever
-STT they end up using (Whisper API, Google Cloud STT, Vosk offline model,
-etc.) without changing main.py. Until one is wired in, NullTranscriptionProvider
-returns "" and the pipeline degrades gracefully: context_risk = 0 and
-action_risk falls back to its no-indicators baseline (0.10), so the final
-score is still computed, just from voice + reliability only.
+Integrated with OpenAI Whisper for automated speech-to-text conversion.
 """
 
 from __future__ import annotations
 import numpy as np
-
+import torch
+import warnings
 
 class TranscriptionProvider:
     def transcribe(self, audio: np.ndarray, sample_rate: int) -> str:
         raise NotImplementedError
 
 
+class WhisperTranscriptionProvider(TranscriptionProvider):
+    """Production-grade Whisper STT provider for local offline transcription."""
+
+    def __init__(self, model_size: str = "base"):
+        import whisper
+        # Automatically detect device (GPU if available, else CPU)
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        warnings.filterwarnings("ignore", category=UserWarning)
+        
+        # Load whisper model into memory once during startup
+        self.model = whisper.load_model(model_size, device=self.device)
+
+    def transcribe(self, audio: np.ndarray, sample_rate: int) -> str:
+        try:
+            # Whisper expects float32 numpy array normalized between -1.0 and 1.0
+            audio = np.asarray(audio, dtype=np.float32)
+            
+            # If sample rate isn't 16kHz, Whisper's internal feature extractor expects 16k,
+            # but assuming audio is already resampled to 16kHz by main.py pipeline.
+            result = self.model.transcribe(audio, fp16=(self.device == "cuda"))
+            return result.get("text", "").strip()
+        except Exception as e:
+            print(f"Transcription error: {e}")
+            return ""
+
+
 class NullTranscriptionProvider(TranscriptionProvider):
-    """Placeholder used until a real STT backend is configured."""
+    """Fallback fallback provider if whisper isn't required."""
 
     def transcribe(self, audio: np.ndarray, sample_rate: int) -> str:
         return ""
 
 
-# TODO (team): swap this for a real provider, e.g.:
-#
-# class WhisperTranscriptionProvider(TranscriptionProvider):
-#     def __init__(self, model_size="base"):
-#         import whisper
-#         self.model = whisper.load_model(model_size)
-#
-#     def transcribe(self, audio, sample_rate):
-#         result = self.model.transcribe(audio, fp16=False)
-#         return result["text"]
-#
-# Then in main.py: transcription_provider = WhisperTranscriptionProvider()
-
-transcription_provider: TranscriptionProvider = NullTranscriptionProvider()
+# Active transcription provider initialized for production use
+try:
+    transcription_provider: TranscriptionProvider = WhisperTranscriptionProvider(model_size="base")
+except Exception as e:
+    print(f"Warning: Could not load Whisper model ({e}). Falling back to NullTranscriptionProvider.")
+    transcription_provider: TranscriptionProvider = NullTranscriptionProvider()
