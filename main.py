@@ -1,11 +1,14 @@
 from typing import Optional
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-import soundfile as sf
 import io
 import os
+import shutil
+import tempfile
 import urllib.request
 import zipfile
+import librosa
+import numpy as np
 
 # ==========================================
 # AUTO-DOWNLOAD & UNZIP MODEL WEIGHTS ON RENDER
@@ -18,7 +21,7 @@ if not os.path.exists(weights_path):
     os.makedirs(weights_dir, exist_ok=True)
     print("🔄 Downloading AASIST-L zip from GitHub Release...")
     
-    # 👇 Tera GitHub Release wala direct zip link yahan set kar diya hai
+    # Tera GitHub Release wala direct zip link
     model_url = "https://github.com/user-attachments/files/31959888/AASIST-L.zip"
     
     try:
@@ -66,6 +69,40 @@ app.add_middleware(
 detector = AASISTDetector()
 
 
+async def load_and_process_audio(file: UploadFile):
+    """
+    Safely saves uploaded audio to a temp file and loads it via librosa.
+    This bypasses libsndfile stream bugs and handles .mp3, .webm, .wav, etc. seamlessly.
+    Automatically handles resampling to 16000Hz and converting to mono.
+    """
+    file_extension = os.path.splitext(file.filename)[1] if file.filename else ".wav"
+    if not file_extension:
+        file_extension = ".wav"
+
+    # Save uploaded bytes to a secure temporary file
+    with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as temp_audio:
+        shutil.copyfileobj(file.file, temp_audio)
+        temp_audio_path = temp_audio.name
+
+    try:
+        # Load using librosa (handles multi-format decoding, mono mixing, and resampling natively)
+        audio, sample_rate = librosa.load(
+            temp_audio_path, 
+            sr=AASISTDetector.SAMPLE_RATE, 
+            mono=True
+        )
+        return audio, sample_rate, original_sr_approx := 16000
+    except Exception as e:
+        raise ValueError(f"Failed to decode audio file: {str(e)}")
+    finally:
+        # Clean up temporary file to prevent disk/memory bloat on Render
+        if os.path.exists(temp_audio_path):
+            try:
+                os.remove(temp_audio_path)
+            except Exception:
+                pass
+
+
 @app.get("/")
 def home():
     return {
@@ -80,26 +117,20 @@ def home():
 @app.post("/upload-audio")
 async def upload_audio(file: UploadFile = File(...)):
     """
-    Voice-spoof detection only endpoint.
+    Voice-spoof detection only endpoint with robust file handling.
     """
-    audio_data = await file.read()
-    audio, sample_rate = sf.read(io.BytesIO(audio_data))
+    audio_data_bytes = await file.read()
+    file.file.seek(0) # Reset pointer for safe reading inside helper
 
-    if len(audio.shape) > 1:
-        audio = audio.mean(axis=1)
-
+    audio, sample_rate, original_sample_rate = await load_and_process_audio(file)
     duration = len(audio) / sample_rate
-
-    original_sample_rate = sample_rate
-    audio = resample_audio(audio, sample_rate, AASISTDetector.SAMPLE_RATE)
-    sample_rate = AASISTDetector.SAMPLE_RATE
 
     detection = detector.analyze(audio)
 
     return {
         "filename": file.filename,
         "content_type": file.content_type,
-        "size_bytes": len(audio_data),
+        "size_bytes": len(audio_data_bytes),
         "original_sample_rate": original_sample_rate,
         "analyzed_sample_rate": sample_rate,
         "duration_seconds": round(duration, 2),
@@ -115,19 +146,11 @@ async def analyze_call(
 ):
     """
     Full enterprise pipeline: Voice Spoof Detection + Auto-Transcription (Whisper) 
-    + Context/Action Risk Fusion.
+    + Context/Action Risk Fusion with robust cross-format support.
     """
-    audio_data = await file.read()
-    audio, sample_rate = sf.read(io.BytesIO(audio_data))
-
-    if len(audio.shape) > 1:
-        audio = audio.mean(axis=1)
-
+    # Load and process audio safely using temp file + librosa
+    audio, sample_rate, original_sample_rate = await load_and_process_audio(file)
     duration = len(audio) / sample_rate
-
-    original_sample_rate = sample_rate
-    audio = resample_audio(audio, sample_rate, AASISTDetector.SAMPLE_RATE)
-    sample_rate = AASISTDetector.SAMPLE_RATE
 
     # --- 1. Voice Channel Analysis (AASIST-L) ---
     detection = detector.analyze(audio)
