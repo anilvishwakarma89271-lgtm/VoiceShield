@@ -1,144 +1,73 @@
-from typing import Optional
+import os
+import shutil
+import tempfile
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
-from fastapi import FastAPI, UploadFile, File, Form
-import soundfile as sf
-import io
+app = FastAPI(title="Call Analyzer API", version="1.0.0")
 
-from audio_pipeline import create_windows, resample_audio
-from aasist_detector import AASISTDetector
-from transcription import transcription_provider
-from risk_engine import (
-    detect_indicators,
-    calculate_context_risk,
-    calculate_action_risk,
-    calculate_final_risk,
+# 1. CORS Setup (Frontend connection error fix)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Production me apka frontend domain replace karein
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-
-app = FastAPI(title="VoiceShield Backend")
-
-# Load AASIST-L once when backend starts
-detector = AASISTDetector()
+# Allowed audio extensions
+ALLOWED_EXTENSIONS = {".mp3", ".wav", ".m4a", ".ogg", ".flac"}
 
 
 @app.get("/")
-def home():
-    return {
-        "project": "VoiceShield Backend",
-        "status": "Backend is running",
-        "detector": "AASIST-L",
-        "risk_engine": "connected",
-    }
+def read_root():
+    return {"status": "online", "message": "Call Analyzer API is running!"}
 
 
-@app.post("/upload-audio")
-async def upload_audio(file: UploadFile = File(...)):
-    """
-    Kept for backwards compatibility: voice-detection only, no risk fusion.
-    Prefer /analyze-call for the full pipeline.
-    """
+@app.post("/analyze")
+async def analyze_call(file: UploadFile = File(...)):
+    # 2. File validation check
+    file_ext = os.path.splitext(file.filename)[1].lower()
+    if file_ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid file format '{file_ext}'. Allowed formats: {', '.join(ALLOWED_EXTENSIONS)}"
+        )
 
-    audio_data = await file.read()
-    audio, sample_rate = sf.read(io.BytesIO(audio_data))
+    temp_file_path = None
+    try:
+        # 3. Save uploaded file safely to temp directory
+        with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as temp_file:
+            shutil.copyfileobj(file.file, temp_file)
+            temp_file_path = temp_file.name
 
-    if len(audio.shape) > 1:
-        audio = audio.mean(axis=1)
+        # --- YOUR AI / AUDIO ANALYSIS LOGIC HERE ---
+        # Demo response logic (Replace this block with your actual AI/Whisper code)
+        analysis_result = {
+            "file_name": file.filename,
+            "duration": "02:45",
+            "sentiment": "Positive",
+            "summary": "Customer called regarding account inquiry. Issue was resolved smoothly.",
+            "key_takeaways": [
+                "Customer satisfied with support",
+                "No follow-up required"
+            ],
+            "transcription": "Hello, I need help with my account... Thank you, that solved it!"
+        }
+        # -------------------------------------------
 
-    duration = len(audio) / sample_rate
+        return analysis_result
 
-    # BUG FIX: resample to what AASIST-L actually expects (16kHz) before
-    # doing anything else with it. Previously this was skipped entirely -
-    # a file at any other native rate got fed to the model as-is, which
-    # confirmed produces false spoof-risk inflation on genuine speech.
-    original_sample_rate = sample_rate
-    audio = resample_audio(audio, sample_rate, AASISTDetector.SAMPLE_RATE)
-    sample_rate = AASISTDetector.SAMPLE_RATE
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
 
-    # Harsh's 1s chunking - informational only, does not feed detection.
-    # AASISTDetector windows the audio itself internally (4s windows, sized
-    # to the model's expected input length) - this count is just a coarse
-    # "how many 1s slices does this clip have" stat for the API consumer.
-    informational_chunks = create_windows(audio, sample_rate, window_seconds=1)
-
-    detection = detector.analyze(audio)
-
-    return {
-        "filename": file.filename,
-        "content_type": file.content_type,
-        "size_bytes": len(audio_data),
-        "original_sample_rate": original_sample_rate,
-        "analyzed_sample_rate": sample_rate,
-        "duration_seconds": round(duration, 2),
-        "informational_1s_chunk_count": len(informational_chunks),
-        "voice_detection": detection,
-        "status": "Audio analyzed successfully",
-    }
+    finally:
+        # 4. Clean up temporary files to avoid server storage bugs
+        if temp_file_path and os.path.exists(temp_file_path):
+            os.remove(temp_file_path)
 
 
-@app.post("/analyze-call")
-async def analyze_call(
-    file: UploadFile = File(...),
-    transcript: Optional[str] = Form(None),
-):
-    """
-    Full pipeline: voice spoof detection + (optional) transcript-based
-    context/action risk indicators, fused into one final risk verdict.
-
-    `transcript` is optional. If the caller already has one (e.g. from
-    their own call-center STT), pass it as a form field. If omitted, this
-    falls back to `transcription_provider` (currently a no-op stub - see
-    transcription.py) and, failing that, to voice-only risk.
-    """
-
-    audio_data = await file.read()
-    audio, sample_rate = sf.read(io.BytesIO(audio_data))
-
-    if len(audio.shape) > 1:
-        audio = audio.mean(axis=1)
-
-    duration = len(audio) / sample_rate
-
-    # BUG FIX: see /upload-audio - same missing resample step, same fix.
-    original_sample_rate = sample_rate
-    audio = resample_audio(audio, sample_rate, AASISTDetector.SAMPLE_RATE)
-    sample_rate = AASISTDetector.SAMPLE_RATE
-
-    informational_chunks = create_windows(audio, sample_rate, window_seconds=1)
-
-    # --- Voice channel (Sahil's AASIST-L) ---
-    detection = detector.analyze(audio)
-    voice_risk = detection["average_spoof_probability"]
-    reliability = detection["reliability"]
-
-    # --- Transcript channel (risk_engine) ---
-    if transcript is None:
-        transcript = transcription_provider.transcribe(audio, sample_rate)
-
-    indicators = detect_indicators(transcript) if transcript else []
-    context_risk = calculate_context_risk(indicators) if transcript else 0.0
-    action_risk = calculate_action_risk(indicators)  # 0.10 baseline if indicators == []
-
-    # --- Fusion ---
-    final_risk = calculate_final_risk(
-        voice_risk=voice_risk,
-        context_risk=context_risk,
-        action_risk=action_risk,
-        reliability=reliability,
-    )
-
-    return {
-        "filename": file.filename,
-        "original_sample_rate": original_sample_rate,
-        "analyzed_sample_rate": sample_rate,
-        "duration_seconds": round(duration, 2),
-        "informational_1s_chunk_count": len(informational_chunks),
-
-        "voice_detection": detection,
-
-        "transcript_used": transcript,
-        "detected_indicators": indicators,
-        "context_risk": round(context_risk, 3),
-        "action_risk": round(action_risk, 3),
-
-        "final_risk_assessment": final_risk,
-    }
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
