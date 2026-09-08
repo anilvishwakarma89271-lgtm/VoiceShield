@@ -8,6 +8,10 @@ import urllib.request
 import zipfile
 import librosa
 import numpy as np
+import torch
+
+# Limit torch threads to avoid overloading Render free CPU
+torch.set_num_threads(2)
 
 # ==========================================
 # AUTO-DOWNLOAD & UNZIP MODEL WEIGHTS ON RENDER
@@ -20,7 +24,7 @@ if not os.path.exists(weights_path):
     os.makedirs(weights_dir, exist_ok=True)
     print("🔄 Downloading AASIST-L zip from GitHub Release...")
     
-    # GitHub Release wala direct zip link
+    # GitHub Release direct zip download link
     model_url = "https://github.com/user-attachments/files/31959888/AASIST-L.zip"
     
     try:
@@ -29,7 +33,6 @@ if not os.path.exists(weights_path):
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
             zip_ref.extractall(weights_dir)
         
-        # Zip file ko delete kar do taaki storage bache
         if os.path.exists(zip_path):
             os.remove(zip_path)
         print("✅ Model weights ready and extracted successfully!")
@@ -51,13 +54,13 @@ from risk_engine import (
 
 app = FastAPI(title="VoiceShield Backend")
 
-# CORS middleware configured with Vercel frontend domain to prevent CORS blocks
+# Enable CORS for Vercel Frontend and Local Dev
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",
         "http://127.0.0.1:5173",
-        "https://voiceshield-iota.vercel.app",  # <--- Vercel Frontend URL allowed explicitly
+        "https://voiceshield-iota.vercel.app",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -70,32 +73,31 @@ detector = AASISTDetector()
 
 async def load_and_process_audio(file: UploadFile):
     """
-    Safely saves uploaded audio to a temp file and loads it via librosa.
-    This bypasses libsndfile stream bugs and handles .mp3, .webm, .wav, etc. seamlessly.
-    Automatically handles resampling to 16000Hz and converting to mono.
+    Safely saves uploaded audio to a temp file and loads ONLY the first 20 seconds.
+    This bypasses libsndfile stream bugs, handles all formats (.mp3, .webm, .wav),
+    and speeds up execution on Render.
     """
     file_extension = os.path.splitext(file.filename)[1] if file.filename else ".wav"
     if not file_extension:
         file_extension = ".wav"
 
-    # Save uploaded bytes to a secure temporary file
     with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as temp_audio:
         shutil.copyfileobj(file.file, temp_audio)
         temp_audio_path = temp_audio.name
 
     try:
-        # Load using librosa (handles multi-format decoding, mono mixing, and resampling natively)
+        # duration=20.0 lagane se sirf pehle 20 sec process honge (Fast & Lightweight)
         audio, sample_rate = librosa.load(
             temp_audio_path, 
             sr=AASISTDetector.SAMPLE_RATE, 
-            mono=True
+            mono=True,
+            duration=20.0
         )
         original_sr_approx = 16000
         return audio, sample_rate, original_sr_approx
     except Exception as e:
         raise ValueError(f"Failed to decode audio file: {str(e)}")
     finally:
-        # Clean up temporary file to prevent disk/memory bloat on Render
         if os.path.exists(temp_audio_path):
             try:
                 os.remove(temp_audio_path)
@@ -117,10 +119,10 @@ def home():
 @app.post("/upload-audio")
 async def upload_audio(file: UploadFile = File(...)):
     """
-    Voice-spoof detection only endpoint with robust file handling.
+    Voice-spoof detection only endpoint.
     """
     audio_data_bytes = await file.read()
-    file.file.seek(0) # Reset pointer for safe reading inside helper
+    file.file.seek(0)
 
     audio, sample_rate, original_sample_rate = await load_and_process_audio(file)
     duration = len(audio) / sample_rate
@@ -145,27 +147,29 @@ async def analyze_call(
     transcript: Optional[str] = Form(None),
 ):
     """
-    Full enterprise pipeline: Voice Spoof Detection + Auto-Transcription (Whisper) 
-    + Context/Action Risk Fusion with robust cross-format support.
+    Full pipeline: Voice Spoof Detection + Fast Processing + Risk Fusion.
     """
-    # Load and process audio safely using temp file + librosa
     audio, sample_rate, original_sample_rate = await load_and_process_audio(file)
     duration = len(audio) / sample_rate
 
-    # --- 1. Voice Channel Analysis (AASIST-L) ---
+    # 1. Voice Channel Analysis (AASIST-L)
     detection = detector.analyze(audio)
     voice_risk = detection["average_spoof_probability"]
     reliability = detection["reliability"]
 
-    # --- 2. Context Channel (Automatic Speech-to-Text via Whisper) ---
+    # 2. Context Channel (Skip slow Whisper auto-transcribe if empty)
     if not transcript:
-        transcript = transcription_provider.transcribe(audio, sample_rate)
+        transcript_used_flag = ""
+        indicators = []
+        context_risk = 0.0
+        action_risk = 0.0
+    else:
+        transcript_used_flag = transcript
+        indicators = detect_indicators(transcript)
+        context_risk = calculate_context_risk(indicators)
+        action_risk = calculate_action_risk(indicators)
 
-    indicators = detect_indicators(transcript) if transcript else []
-    context_risk = calculate_context_risk(indicators) if transcript else 0.0
-    action_risk = calculate_action_risk(indicators)
-
-    # --- 3. Multi-Layer Risk Fusion ---
+    # 3. Risk Fusion
     final_risk = calculate_final_risk(
         voice_risk=voice_risk,
         context_risk=context_risk,
@@ -179,7 +183,7 @@ async def analyze_call(
         "analyzed_sample_rate": sample_rate,
         "duration_seconds": round(duration, 2),
         "voice_detection": detection,
-        "transcript_used": transcript,
+        "transcript_used": transcript_used_flag,
         "detected_indicators": indicators,
         "context_risk": round(context_risk, 3),
         "action_risk": round(action_risk, 3),
