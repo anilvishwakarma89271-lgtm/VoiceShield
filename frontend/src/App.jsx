@@ -35,8 +35,8 @@ export default function App() {
     formData.append('transcript', transcript);
 
     try {
-      // Connecting to FastAPI backend
-      const response = await fetch('http://127.0.0.1:8000/analyze-call', {
+      // Connected to your live Render backend
+      const response = await fetch('https://voiceshield-1j6d.onrender.com/analyze-call', {
         method: 'POST',
         body: formData,
       });
@@ -60,8 +60,8 @@ export default function App() {
       setIncidents([newIncident, ...incidents]);
       setActiveTab('dashboard');
     } catch (err) {
-      console.warn('Backend offline or error, running simulation mode:', err);
-      // Fallback simulation for seamless demo if backend is not running
+      console.warn('Render backend connection error or offline, running simulation mode:', err);
+      // Fallback simulation for seamless demo if Render is sleeping/offline
       setTimeout(() => {
         const mockData = {
           spoof_score: '91.5%',
@@ -495,10 +495,10 @@ export default function App() {
 
               <div className="setting-row-card">
                 <div>
-                  <h4 className="st-name">FastAPI Backend</h4>
-                  <p className="st-desc">Local security analysis API • Port 8000</p>
+                  <h4 className="st-name">Render Cloud Backend</h4>
+                  <p className="st-desc">Live production API • voiceshield-1j6d.onrender.com</p>
                 </div>
-                <span className="st-status-online">ONLINE</span>
+                <span className="st-status-online">CONNECTED</span>
               </div>
 
               <div className="setting-row-card">
@@ -511,8 +511,8 @@ export default function App() {
             </div>
 
             <div className="demo-env-box" style={{ marginTop: '25px' }}>
-              <div className="demo-env-title">ℹ Demo environment</div>
-              <p className="demo-env-desc">VoiceShield is running locally. Incident history is stored in this browser and can be cleared from the Incident History page.</p>
+              <div className="demo-env-title">ℹ Production Ready</div>
+              <p className="demo-env-desc">Frontend is now integrated with your live Render backend URL. Ensure your Render service allows CORS requests if you encounter connection issues.</p>
             </div>
           </div>
         )}
