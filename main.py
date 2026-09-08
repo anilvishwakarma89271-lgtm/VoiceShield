@@ -51,13 +51,13 @@ from risk_engine import (
 
 app = FastAPI(title="VoiceShield Backend")
 
-# CORS middleware for frontend integration
+# CORS middleware configured with Vercel frontend domain to prevent CORS blocks
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",
         "http://127.0.0.1:5173",
-        "*",
+        "https://voiceshield-iota.vercel.app",  # <--- Vercel Frontend URL allowed explicitly
     ],
     allow_credentials=True,
     allow_methods=["*"],
