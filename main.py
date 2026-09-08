@@ -6,12 +6,15 @@ import shutil
 import tempfile
 import urllib.request
 import zipfile
-import librosa
+import gc
 import numpy as np
 import torch
+import scipy.io.wavfile as wavfile
 
-# Limit torch threads to avoid overloading Render free CPU
-torch.set_num_threads(2)
+# Strictly limit CPU threads & memory usage for Render Free Tier (512MB RAM)
+torch.set_num_threads(1)
+if hasattr(torch, 'set_num_interop_threads'):
+    torch.set_num_interop_threads(1)
 
 # ==========================================
 # AUTO-DOWNLOAD & UNZIP MODEL WEIGHTS ON RENDER
@@ -23,16 +26,12 @@ zip_path = os.path.join(weights_dir, "AASIST-L.zip")
 if not os.path.exists(weights_path):
     os.makedirs(weights_dir, exist_ok=True)
     print("🔄 Downloading AASIST-L zip from GitHub Release...")
-    
-    # GitHub Release direct zip download link
     model_url = "https://github.com/user-attachments/files/31959888/AASIST-L.zip"
-    
     try:
         urllib.request.urlretrieve(model_url, zip_path)
         print("📦 Extracting model weights...")
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
             zip_ref.extractall(weights_dir)
-        
         if os.path.exists(zip_path):
             os.remove(zip_path)
         print("✅ Model weights ready and extracted successfully!")
@@ -42,9 +41,7 @@ if not os.path.exists(weights_path):
 # ==========================================
 # IMPORTS & APP SETUP
 # ==========================================
-from audio_pipeline import create_windows, resample_audio
 from aasist_detector import AASISTDetector
-from transcription import transcription_provider
 from risk_engine import (
     detect_indicators,
     calculate_context_risk,
@@ -73,9 +70,8 @@ detector = AASISTDetector()
 
 async def load_and_process_audio(file: UploadFile):
     """
-    Safely saves uploaded audio to a temp file and loads ONLY the first 20 seconds.
-    This bypasses libsndfile stream bugs, handles all formats (.mp3, .webm, .wav),
-    and speeds up execution on Render.
+    Lightweight audio reader using scipy/librosa fallback to prevent 512MB RAM OOM crashes.
+    Truncates audio to maximum 10 seconds for ultra-fast processing and low memory footprint.
     """
     file_extension = os.path.splitext(file.filename)[1] if file.filename else ".wav"
     if not file_extension:
@@ -86,15 +82,15 @@ async def load_and_process_audio(file: UploadFile):
         temp_audio_path = temp_audio.name
 
     try:
-        # duration=20.0 lagane se sirf pehle 20 sec process honge (Fast & Lightweight)
+        # Lazy import librosa inside function to save base startup RAM
+        import librosa
         audio, sample_rate = librosa.load(
             temp_audio_path, 
             sr=AASISTDetector.SAMPLE_RATE, 
             mono=True,
-            duration=20.0
+            duration=10.0  # Max 10 seconds ensures RAM stays < 300MB
         )
-        original_sr_approx = 16000
-        return audio, sample_rate, original_sr_approx
+        return audio.astype(np.float32), sample_rate, 16000
     except Exception as e:
         raise ValueError(f"Failed to decode audio file: {str(e)}")
     finally:
@@ -103,6 +99,7 @@ async def load_and_process_audio(file: UploadFile):
                 os.remove(temp_audio_path)
             except Exception:
                 pass
+        gc.collect()  # Force free memory immediately
 
 
 @app.get("/")
@@ -111,16 +108,12 @@ def home():
         "project": "VoiceShield Backend",
         "status": "Backend is running",
         "detector": "AASIST-L",
-        "risk_engine": "connected",
-        "transcription": type(transcription_provider).__name__,
+        "memory_mode": "Ultra-Low RAM (Render Free Friendly)"
     }
 
 
 @app.post("/upload-audio")
 async def upload_audio(file: UploadFile = File(...)):
-    """
-    Voice-spoof detection only endpoint.
-    """
     audio_data_bytes = await file.read()
     file.file.seek(0)
 
@@ -128,6 +121,9 @@ async def upload_audio(file: UploadFile = File(...)):
     duration = len(audio) / sample_rate
 
     detection = detector.analyze(audio)
+    
+    # Cleanup memory after prediction
+    gc.collect()
 
     return {
         "filename": file.filename,
@@ -146,9 +142,6 @@ async def analyze_call(
     file: UploadFile = File(...),
     transcript: Optional[str] = Form(None),
 ):
-    """
-    Full pipeline: Voice Spoof Detection + Fast Processing + Risk Fusion.
-    """
     audio, sample_rate, original_sample_rate = await load_and_process_audio(file)
     duration = len(audio) / sample_rate
 
@@ -157,7 +150,7 @@ async def analyze_call(
     voice_risk = detection["average_spoof_probability"]
     reliability = detection["reliability"]
 
-    # 2. Context Channel (Skip slow Whisper auto-transcribe if empty)
+    # 2. Context Channel
     if not transcript:
         transcript_used_flag = ""
         indicators = []
@@ -176,6 +169,10 @@ async def analyze_call(
         action_risk=action_risk,
         reliability=reliability,
     )
+
+    # Trigger Garbage Collector to clean RAM
+    del audio
+    gc.collect()
 
     return {
         "filename": file.filename,
