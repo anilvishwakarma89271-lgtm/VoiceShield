@@ -3,7 +3,40 @@ from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 import soundfile as sf
 import io
+import os
+import urllib.request
+import zipfile
 
+# ==========================================
+# AUTO-DOWNLOAD & UNZIP MODEL WEIGHTS ON RENDER
+# ==========================================
+weights_dir = "weights"
+weights_path = os.path.join(weights_dir, "AASIST-L.pth")
+zip_path = os.path.join(weights_dir, "AASIST-L.zip")
+
+if not os.path.exists(weights_path):
+    os.makedirs(weights_dir, exist_ok=True)
+    print("🔄 Downloading AASIST-L zip from GitHub Release...")
+    
+    # 👇 Tera GitHub Release wala direct zip link yahan set kar diya hai
+    model_url = "https://github.com/user-attachments/files/31959888/AASIST-L.zip"
+    
+    try:
+        urllib.request.urlretrieve(model_url, zip_path)
+        print("📦 Extracting model weights...")
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall(weights_dir)
+        
+        # Zip file ko delete kar do taaki storage bache
+        if os.path.exists(zip_path):
+            os.remove(zip_path)
+        print("✅ Model weights ready and extracted successfully!")
+    except Exception as e:
+        print(f"❌ Failed to download/extract model: {e}")
+
+# ==========================================
+# IMPORTS & APP SETUP
+# ==========================================
 from audio_pipeline import create_windows, resample_audio
 from aasist_detector import AASISTDetector
 from transcription import transcription_provider
@@ -16,12 +49,13 @@ from risk_engine import (
 
 app = FastAPI(title="VoiceShield Backend")
 
-# CORS middleware for frontend integration (Vite / React)
+# CORS middleware for frontend integration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",
         "http://127.0.0.1:5173",
+        "*",
     ],
     allow_credentials=True,
     allow_methods=["*"],
