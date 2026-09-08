@@ -1,11 +1,12 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
+import { ShieldAlert, Upload, Activity } from 'lucide-react';
 import './App.css';
 
 function App() {
-  const [activeTab, setActiveTab] = useState('dashboard');
   const [file, setFile] = useState(null);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
+  const fileInputRef = useRef(null);
 
   const API_URL = import.meta.env.VITE_API_URL || 'https://voiceshield-1j6d.onrender.com';
 
@@ -36,97 +37,111 @@ function App() {
   };
 
   return (
-    <div className="app-container">
-      {/* Sidebar Navigation */}
-      <div className="sidebar">
-        <h2>Call Analyzer</h2>
-        <div className="nav-buttons">
-          <button 
-            className={`nav-btn ${activeTab === 'dashboard' ? 'active' : ''}`}
-            onClick={() => setActiveTab('dashboard')}
-          >
-            Dashboard
-          </button>
-          <button 
-            className={`nav-btn ${activeTab === 'analyze' ? 'active' : ''}`}
-            onClick={() => setActiveTab('analyze')}
-          >
-            Analyze Call
-          </button>
+    <div className="app-wrapper">
+      {/* Top Navbar */}
+      <header className="navbar">
+        <div className="logo-section">
+          <Activity className="logo-icon" />
+          <span className="logo-text">VOICESHIELD</span>
         </div>
-      </div>
+        
+        <nav className="nav-links">
+          <a className="nav-link" href="#home">Home</a>
+          <a className="nav-link" href="#tech">Tech</a>
+          <a className="nav-link" href="#solutions">Solutions</a>
+          <a className="nav-link" href="#api">API</a>
+          <a className="nav-link" href="#pricing">Pricing</a>
+        </nav>
 
-      {/* Main Content View */}
-      <div className="main-content">
-        {activeTab === 'dashboard' && (
-          <div>
-            <h1>Dashboard</h1>
-            <p style={{ color: '#94a3b8', marginTop: '8px' }}>
-              Welcome to Voice Call Threat & AI Detector
-            </p>
-            <div className="card">
-              <h3>System Status</h3>
-              <p style={{ color: '#22c55e', marginTop: '8px' }}>
-                ● Backend Connected ({API_URL})
+        <button className="scan-now-btn">SCAN NOW</button>
+      </header>
+
+      {/* Main Hero Container */}
+      <main className="hero-container">
+        <p className="hero-subtag">Your trusted shield against voice fraud.</p>
+        <h1 className="hero-title">
+          VOICESHIELD - <span className="title-gradient">AI Voice Detection</span>
+        </h1>
+        <h2 className="hero-section-heading">Test an Audio File</h2>
+
+        {/* Upload Form */}
+        <form onSubmit={handleFileUpload}>
+          <div className="upload-container">
+            <div className="upload-inner" onClick={() => fileInputRef.current.click()}>
+              <Upload className="upload-icon" />
+              <div className="upload-main-text">DROP OR UPLOAD AUDIO</div>
+              <div className="upload-sub-text">
+                {file ? `Selected: ${file.name}` : "Supports .wav, .mp3, .m4a (Max 50MB)"}
+              </div>
+              <input 
+                ref={fileInputRef}
+                type="file" 
+                accept="audio/*" 
+                className="file-input-hidden"
+                onChange={(e) => setFile(e.target.files[0])} 
+              />
+            </div>
+          </div>
+
+          <div className="action-btn-container">
+            <button type="submit" className="start-analysis-btn" disabled={loading}>
+              {loading ? "ANALYZING..." : "START ANALYSIS"}
+            </button>
+          </div>
+        </form>
+
+        {/* Clean Result Display */}
+        {result && (
+          <div className="results-card-modern">
+            <h3 style={{ color: '#38bdf8', marginBottom: '16px' }}>Analysis Results</h3>
+            
+            <div className="grid-metrics">
+              <div className="metric-box">
+                <div className="metric-label">File Name</div>
+                <div className="metric-value">{result.file_name || 'N/A'}</div>
+              </div>
+
+              <div className="metric-box">
+                <div className="metric-label">Duration</div>
+                <div className="metric-value">{result.duration || 'N/A'}</div>
+              </div>
+
+              <div className="metric-box">
+                <div className="metric-label">Sentiment</div>
+                <div className="metric-value" style={{ color: '#22c55e' }}>
+                  {result.sentiment || 'N/A'}
+                </div>
+              </div>
+            </div>
+
+            <div className="metric-box" style={{ marginTop: '16px' }}>
+              <div className="metric-label">Summary</div>
+              <p style={{ marginTop: '6px', color: '#f8fafc' }}>
+                {result.summary || 'No summary available'}
+              </p>
+            </div>
+
+            <div className="metric-box" style={{ marginTop: '16px' }}>
+              <div className="metric-label">Transcription</div>
+              <p style={{ marginTop: '6px', color: '#f8fafc' }}>
+                {result.transcription || 'No transcription generated'}
               </p>
             </div>
           </div>
         )}
+      </main>
 
-        {activeTab === 'analyze' && (
-          <div>
-            <h1>Analyze Call</h1>
-            <div className="card">
-              <form onSubmit={handleFileUpload}>
-                <div className="upload-box">
-                  <input 
-                    type="file" 
-                    accept="audio/*" 
-                    onChange={(e) => setFile(e.target.files[0])} 
-                  />
-                  {file && <p style={{ marginTop: '10px', color: '#38bdf8' }}>Selected: {file.name}</p>}
-                </div>
-                <button type="submit" className="primary-btn" disabled={loading}>
-                  {loading ? "Analyzing..." : "Start Analysis"}
-                </button>
-              </form>
-
-              {/* Clean Result Cards - No Raw JSON */}
-              {result && (
-                <div style={{ marginTop: '28px', borderTop: '1px solid #334155', paddingTop: '20px' }}>
-                  <h3 style={{ color: '#38bdf8', marginBottom: '16px' }}>Analysis Results</h3>
-                  
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px' }}>
-                    <div className="card" style={{ margin: 0, padding: '16px' }}>
-                      <p style={{ color: '#94a3b8', fontSize: '0.85rem' }}>File Name</p>
-                      <p style={{ fontWeight: '600', marginTop: '4px' }}>{result.file_name || 'N/A'}</p>
-                    </div>
-
-                    <div className="card" style={{ margin: 0, padding: '16px' }}>
-                      <p style={{ color: '#94a3b8', fontSize: '0.85rem' }}>Duration</p>
-                      <p style={{ fontWeight: '600', marginTop: '4px' }}>{result.duration || 'N/A'}</p>
-                    </div>
-
-                    <div className="card" style={{ margin: 0, padding: '16px' }}>
-                      <p style={{ color: '#94a3b8', fontSize: '0.85rem' }}>Sentiment</p>
-                      <p style={{ fontWeight: '600', marginTop: '4px', color: '#22c55e' }}>{result.sentiment || 'N/A'}</p>
-                    </div>
-                  </div>
-
-                  <div className="card" style={{ marginTop: '16px', padding: '16px' }}>
-                    <p style={{ color: '#94a3b8', fontSize: '0.85rem' }}>Summary</p>
-                    <p style={{ marginTop: '6px', color: '#f8fafc' }}>{result.summary || 'No summary available'}</p>
-                  </div>
-
-                  <div className="card" style={{ marginTop: '16px', padding: '16px' }}>
-                    <p style={{ color: '#94a3b8', fontSize: '0.85rem' }}>Transcription</p>
-                    <p style={{ marginTop: '6px', color: '#f8fafc' }}>{result.transcription || 'No transcription generated'}</p>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
+      {/* Floating Recent Analyses Box */}
+      <div className="recent-analyses-box">
+        <div className="recent-header">
+          <span>Recent Analyses</span>
+          <span>...</span>
+        </div>
+        <div className="recent-list">
+          <div className="recent-item">Row 1: File_A.mp3 - <strong style={{color:'#ef4444'}}>94% AI</strong></div>
+          <div className="recent-item">Row 2: Recording_1.wav - <strong style={{color:'#22c55e'}}>89% Human</strong></div>
+          <div className="recent-item">Row 3: Deepfake_01.mp3 - <strong style={{color:'#ef4444'}}>98% Deepfake</strong></div>
+        </div>
       </div>
     </div>
   );
