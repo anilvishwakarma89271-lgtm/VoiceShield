@@ -1,7 +1,6 @@
 from typing import Optional
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-import io
 import os
 import shutil
 import tempfile
@@ -21,7 +20,7 @@ if not os.path.exists(weights_path):
     os.makedirs(weights_dir, exist_ok=True)
     print("🔄 Downloading AASIST-L zip from GitHub Release...")
     
-    # Tera GitHub Release wala direct zip link
+    # GitHub Release wala direct zip link
     model_url = "https://github.com/user-attachments/files/31959888/AASIST-L.zip"
     
     try:
@@ -91,7 +90,8 @@ async def load_and_process_audio(file: UploadFile):
             sr=AASISTDetector.SAMPLE_RATE, 
             mono=True
         )
-        return audio, sample_rate, original_sr_approx := 16000
+        original_sr_approx = 16000
+        return audio, sample_rate, original_sr_approx
     except Exception as e:
         raise ValueError(f"Failed to decode audio file: {str(e)}")
     finally:
