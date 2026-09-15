@@ -86,11 +86,16 @@ async def load_and_process_audio(file: UploadFile):
         import librosa
         audio, sample_rate = librosa.load(
             temp_audio_path, 
-            sr=AASISTDetector.SAMPLE_RATE, 
+            sr=None,  # Native sample rate ghene mahatvache ahe
             mono=True,
-            duration=10.0  # Max 10 seconds ensures RAM stays < 300MB
+            duration=10.0
         )
-        return audio.astype(np.float32), sample_rate, 16000
+        
+        # Import and apply pipeline functions from audio_pipeline.py
+        from audio_pipeline import resample_audio
+        processed_audio = resample_audio(audio, sample_rate, AASISTDetector.SAMPLE_RATE)
+        
+        return processed_audio, AASISTDetector.SAMPLE_RATE, sample_rate
     except Exception as e:
         raise ValueError(f"Failed to decode audio file: {str(e)}")
     finally:
