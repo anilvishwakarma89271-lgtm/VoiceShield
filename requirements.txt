@@ -7,3 +7,4 @@ torch
 scipy
 librosa
 resampy
+openai-whisper
