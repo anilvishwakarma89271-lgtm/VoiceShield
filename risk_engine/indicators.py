@@ -1,3 +1,5 @@
+import re
+
 FINANCIAL_TERMS = [
     "transfer money",
     "transfer ₹",
@@ -59,19 +61,23 @@ def detect_indicators(transcript):
 
     indicators = []
 
-    if any(term in text for term in FINANCIAL_TERMS):
+    def term_exists(term, text):
+        pattern = r'(?<!\w)' + re.escape(term) + r'(?!\w)'
+        return bool(re.search(pattern, text))
+
+    if any(term_exists(term, text) for term in FINANCIAL_TERMS):
         indicators.append("financial_request")
 
-    if any(term in text for term in CREDENTIAL_TERMS):
+    if any(term_exists(term, text) for term in CREDENTIAL_TERMS):
         indicators.append("credential_request")
 
-    if any(term in text for term in URGENCY_TERMS):
+    if any(term_exists(term, text) for term in URGENCY_TERMS):
         indicators.append("urgent_request")
 
-    if any(term in text for term in BYPASS_TERMS):
+    if any(term_exists(term, text) for term in BYPASS_TERMS):
         indicators.append("verification_bypass")
 
-    if any(term in text for term in AUTHORITY_TERMS):
+    if any(term_exists(term, text) for term in AUTHORITY_TERMS):
         indicators.append("authority_claim")
 
     return indicators
